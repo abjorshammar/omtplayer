@@ -1,0 +1,150 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout omtplayer
+        uses: actions/checkout@v4
+        with:
+          path: omtplayer
+
+      - name: Checkout libvmx
+        uses: actions/checkout@v4
+        with:
+          repository: openmediatransport/libvmx
+          path: libvmx
+
+      - name: Checkout libomtnet
+        uses: actions/checkout@v4
+        with:
+          repository: openmediatransport/libomtnet
+          path: libomtnet
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Clang and cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Build libvmx
+        working-directory: libvmx/build
+        run: |
+          chmod +x buildlinuxarm64.sh
+          ./buildlinuxarm64.sh
+
+      - name: Build libomtnet
+        working-directory: libomtnet/build
+        run: |
+          chmod +x buildall.sh
+          ./buildall.sh
+
+      - name: Build omtplayer
+        working-directory: omtplayer
+        run: |
+          dotnet publish omtplayer.sln -r linux-arm64 -c Release
+
+      - name: Package tar.gz release
+        run: |
+          mkdir -p release/omtplayer
+          cp omtplayer/bin/Release/net8.0/linux-arm64/native/omtplayer release/omtplayer/
+          cp libvmx/build/libvmx.so release/omtplayer/
+          cp omtplayer/omtplayer.service release/omtplayer/
+          cd release
+          tar -czvf omtplayer-linux-arm64.tar.gz omtplayer
+
+      - name: Build Debian package
+        run: |
+          # Extract version from tag (remove 'v' prefix)
+          VERSION=${GITHUB_REF_NAME#v}
+
+          # Create package directory structure
+          PKG_DIR="omtplayer_${VERSION}_arm64"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/opt/omtplayer"
+          mkdir -p "${PKG_DIR}/etc/systemd/system"
+
+          # Copy application files
+          cp omtplayer/bin/Release/net8.0/linux-arm64/native/omtplayer "${PKG_DIR}/opt/omtplayer/"
+          cp libvmx/build/libvmx.so "${PKG_DIR}/opt/omtplayer/"
+
+          # Copy service file
+          cp omtplayer/omtplayer.service "${PKG_DIR}/etc/systemd/system/"
+
+          # Set permissions
+          chmod 755 "${PKG_DIR}/opt/omtplayer/omtplayer"
+          chmod 644 "${PKG_DIR}/opt/omtplayer/libvmx.so"
+          chmod 644 "${PKG_DIR}/etc/systemd/system/omtplayer.service"
+
+          # Create control file
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: omtplayer
+          Version: ${VERSION}
+          Architecture: arm64
+          Maintainer: Open Media Transport <info@openmediatransport.com>
+          Description: OMT Decoder for Raspberry Pi 5
+           A decoder for Raspberry Pi 5 that can display an OMT source
+           via the HDMI port at up to 1080p60. Includes a built-in web
+           server on port 8080 for source selection.
+          Section: video
+          Priority: optional
+          EOF
+
+          # Remove leading spaces from control file
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
+
+          # Create postinst script to enable and start service
+          cat > "${PKG_DIR}/DEBIAN/postinst" << 'EOF'
+          #!/bin/bash
+          systemctl daemon-reload
+          systemctl enable omtplayer
+          systemctl start omtplayer
+          echo "omtplayer installed and started"
+          echo "Web interface available at http://localhost:8080"
+          EOF
+          chmod 755 "${PKG_DIR}/DEBIAN/postinst"
+
+          # Create prerm script to stop service before removal
+          cat > "${PKG_DIR}/DEBIAN/prerm" << 'EOF'
+          #!/bin/bash
+          if systemctl is-active --quiet omtplayer; then
+              systemctl stop omtplayer
+          fi
+          if systemctl is-enabled --quiet omtplayer; then
+              systemctl disable omtplayer
+          fi
+          EOF
+          chmod 755 "${PKG_DIR}/DEBIAN/prerm"
+
+          # Create postrm script to reload systemd after removal
+          cat > "${PKG_DIR}/DEBIAN/postrm" << 'EOF'
+          #!/bin/bash
+          systemctl daemon-reload
+          EOF
+          chmod 755 "${PKG_DIR}/DEBIAN/postrm"
+
+          # Build the package
+          dpkg-deb --build --root-owner-group "${PKG_DIR}"
+          mv "${PKG_DIR}.deb" "release/omtplayer_${VERSION}_arm64.deb"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/omtplayer-linux-arm64.tar.gz
+            release/omtplayer_*_arm64.deb
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

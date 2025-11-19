@@ -55,7 +55,10 @@ jobs:
       - name: Build omtplayer
         working-directory: omtplayer
         run: |
-          dotnet publish omtplayer.sln -r linux-arm64 -c Release
+          dotnet publish omtplayer.sln -r linux-arm64 -c Release \
+            -p:CppCompilerAndLinker=clang \
+            -p:SysRoot=/usr/aarch64-linux-gnu \
+            -p:ObjCopyName=/usr/bin/aarch64-linux-gnu-objcopy
 
       - name: Package tar.gz release
         run: |

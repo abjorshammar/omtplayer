@@ -56,9 +56,11 @@ jobs:
         working-directory: omtplayer
         run: |
           dotnet publish omtplayer.sln -r linux-arm64 -c Release \
-            -p:CppCompilerAndLinker=clang \
+            -p:CppCompilerAndLinker=clang-18 \
             -p:SysRoot=/usr/aarch64-linux-gnu \
-            -p:ObjCopyName=/usr/bin/aarch64-linux-gnu-objcopy
+            -p:ObjCopyName=/usr/bin/aarch64-linux-gnu-objcopy \
+            -p:LinkerFlavor=lld \
+            -p:ExtraLinkerArgs="--gcc-toolchain=/usr -L/usr/lib/gcc-cross/aarch64-linux-gnu/13"
 
       - name: Package tar.gz release
         run: |
